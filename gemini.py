@@ -1,7 +1,10 @@
 import time
+import logging
 from google import genai
 from google.genai import types
-from settings import GEMINI_API_KEY
+from settings import GEMINI_API_KEY, GEMINI_MODEL
+
+logger = logging.getLogger(__name__)
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -23,18 +26,19 @@ def _generate_with_retry(model: str, contents: list, max_retries: int = 3, delay
 
             # Повторяем только при временных ошибках (503, перегрузка)
             if "503" in error_text or "UNAVAILABLE" in error_text:
-                print(f"Gemini перегружен, попытка {attempt}/{max_retries}, жду {delay} сек...")
+                logger.warning("Gemini перегружен, попытка %d/%d, жду %d сек...", attempt, max_retries, delay)
                 time.sleep(delay)
                 continue
             else:
                 # Другие ошибки — не повторяем, сразу возвращаем
                 break
 
+    logger.error("Ошибка при обращении к Gemini после %d попыток: %s", max_retries, last_error)
     return f"Ошибка при обращении к Gemini после {max_retries} попыток: {last_error}"
 
 
 def ask_gemini_with_image(text: str, image_bytes: bytes = None, mime_type: str = "image/jpeg",
-                           model: str = "gemini-3.5-flash-lite") -> str:
+                           model: str = GEMINI_MODEL) -> str:
     contents = []
     if image_bytes:
         contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
@@ -43,7 +47,7 @@ def ask_gemini_with_image(text: str, image_bytes: bytes = None, mime_type: str =
     return _generate_with_retry(model, contents)
 
 
-def ask_gemini_with_images(text: str, images: list, model: str = "gemini-3.5-flash-lite") -> str:
+def ask_gemini_with_images(text: str, images: list, model: str = GEMINI_MODEL) -> str:
     contents = [text if text else "Опиши, что на изображениях."]
     for img in images:
         contents.append(types.Part.from_bytes(data=img["data"], mime_type=img["mime_type"]))

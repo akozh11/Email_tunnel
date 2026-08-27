@@ -1,9 +1,15 @@
 import time
-from settings import MAIL_USER
-from gemini import ask_gemini_with_image, ask_gemini_with_images
+import logging
 
+from settings import MAIL_USER, POLL_INTERVAL_SECONDS
+from gemini import ask_gemini_with_image, ask_gemini_with_images
 from mail import fetch_and_purge_self_sent_with_images, append_reply_to_inbox
-POLL_INTERVAL_SECONDS = 10
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 def process_incoming_requests():
@@ -24,12 +30,17 @@ def process_incoming_requests():
         if not text.strip() and not images:
             continue
 
-        if images:
-            # Все фото из письма отправляются в одном запросе
-            answer = ask_gemini_with_images(text=text, images=images)
-            request_summary = f"{text} [+ {len(images)} фото]"
-        else:
-            answer = ask_gemini_with_image(text=text)
+        try:
+            if images:
+                # Все фото из письма отправляются в одном запросе
+                answer = ask_gemini_with_images(text=text, images=images)
+                request_summary = f"{text} [+ {len(images)} фото]"
+            else:
+                answer = ask_gemini_with_image(text=text)
+                request_summary = text
+        except Exception as e:
+            logger.exception("Ошибка при обращении к Gemini")
+            answer = f"Не удалось получить ответ от нейросети: {e}"
             request_summary = text
 
         results.append({"request": request_summary, "response": answer})
@@ -41,33 +52,31 @@ def run_once():
     results = process_incoming_requests()
 
     if not results:
-        print("Новых запросов нет.")
+        logger.info("Новых запросов нет.")
         return
 
     for item in results:
-        print(f"\n=== Запрос ===\n{item['request']}")
-        print(f"\n=== Ответ ===\n{item['response']}")
-        print("-" * 50)
+        logger.info("Запрос: %s", item["request"])
+        logger.info("Ответ: %s", item["response"])
 
-        print(f"DEBUG: пытаюсь отправить письмо на {MAIL_USER}...")
         try:
             append_reply_to_inbox(
                 subject="Ответ от нейросети",
                 body_text=item["response"]
             )
-            print("DEBUG: письмо отправлено успешно")
+            logger.info("Письмо с ответом добавлено во входящие (%s)", MAIL_USER)
         except Exception as e:
-            print(f"DEBUG: ОШИБКА при отправке письма: {e}")
+            logger.exception("Ошибка при отправке письма: %s", e)
 
 
 def run_forever():
     """Бесконечный цикл опроса почты с заданным интервалом."""
-    print(f"Email-tunnel запущен. Опрос каждые {POLL_INTERVAL_SECONDS} сек. Ctrl+C для остановки.")
+    logger.info("Email-tunnel запущен. Опрос каждые %d сек. Ctrl+C для остановки.", POLL_INTERVAL_SECONDS)
     while True:
         try:
             run_once()
-        except Exception as e:
-            print(f"Ошибка в цикле обработки: {e}")
+        except Exception:
+            logger.exception("Ошибка в цикле обработки")
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
