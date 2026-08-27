@@ -1,6 +1,5 @@
 import time
 from settings import MAIL_USER
-from mail import fetch_and_purge_self_sent_with_images, send_reply
 from gemini import ask_gemini_with_image, ask_gemini_with_images
 
 from mail import fetch_and_purge_self_sent_with_images, append_reply_to_inbox
