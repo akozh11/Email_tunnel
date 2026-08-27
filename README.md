@@ -1,12 +1,12 @@
 # settings.py
 ── Почта (IMAP/SMTP) ───
-MAIL_USER = "akozh11@mail.ru"
+MAIL_USER = ""
 MAIL_PASS = "" # пароль приложения mail.ru, не основной пароль от аккаунта
 
-IMAP_SERVER = "imap.mail.ru"
+IMAP_SERVER = ""
 IMAP_PORT = 993
 
-SMTP_SERVER = "smtp.mail.ru"
+SMTP_SERVER = ""
 SMTP_PORT = 465
 
 ── Gemini API ────
