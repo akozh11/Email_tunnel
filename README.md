@@ -2,7 +2,7 @@
 ── Почта (IMAP/SMTP) ───
 
 MAIL_USER = ""
-MAIL_PASS = "" # пароль приложения mail.ru, не основной пароль от аккаунта
+MAIL_PASS = "" # пароль для подкл. почтовых клиентов
 
 IMAP_SERVER = ""
 IMAP_PORT = 993
