@@ -222,3 +222,4 @@ settings.py
 # Email_tunnel: секреты и персистентное состояние опроса ящиков
 /state/
 keys
+keys/senders
