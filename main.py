@@ -1,57 +1,76 @@
-import logging
-import threading
+import time
+from settings import MAIL_USER
+from mail import fetch_and_purge_self_sent_with_images, send_reply
+from gemini import ask_gemini_with_image, ask_gemini_with_images
 
-from config import ConfigError, load_config
-from gemini_client import init_client
-from worker import run_account_loop
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-logger = logging.getLogger("email_tunnel.main")
+from mail import fetch_and_purge_self_sent_with_images, append_reply_to_inbox
+POLL_INTERVAL_SECONDS = 10
 
 
-def main() -> None:
-    try:
-        app_config = load_config()
-    except ConfigError as exc:
-        logger.error("Ошибка конфигурации: %s", exc)
-        raise SystemExit(1) from exc
+def process_incoming_requests():
+    """
+    Забирает новые письма от себя, отправляет каждое (текст + фото, если есть)
+    в Gemini, возвращает список результатов.
+    """
+    letters = fetch_and_purge_self_sent_with_images()
 
-    init_client(app_config.gemini_api_key)
+    if not letters:
+        return []
 
-    if not app_config.accounts:
-        logger.error("В config.json не задано ни одного аккаунта.")
-        raise SystemExit(1)
+    results = []
+    for letter in letters:
+        text = letter["text"]
+        images = letter["images"]
 
-    stop_event = threading.Event()
-    threads = []
+        if not text.strip() and not images:
+            continue
 
-    for account in app_config.accounts:
-        thread = threading.Thread(
-            target=run_account_loop,
-            args=(account, stop_event),
-            name=f"account-{account.name}",
-            daemon=True,
-        )
-        threads.append(thread)
-        thread.start()
+        if images:
+            # Все фото из письма отправляются в одном запросе
+            answer = ask_gemini_with_images(text=text, images=images)
+            request_summary = f"{text} [+ {len(images)} фото]"
+        else:
+            answer = ask_gemini_with_image(text=text)
+            request_summary = text
 
-    logger.info("Email-tunnel запущен: %d аккаунт(ов). Ctrl+C для остановки.", len(threads))
+        results.append({"request": request_summary, "response": answer})
 
-    try:
-        while any(t.is_alive() for t in threads):
-            for t in threads:
-                t.join(timeout=1.0)
-    except KeyboardInterrupt:
-        logger.info("Получен сигнал остановки, завершаю потоки...")
-        stop_event.set()
-        for t in threads:
-            t.join(timeout=10.0)
-        logger.info("Остановлено.")
+    return results
+
+
+def run_once():
+    results = process_incoming_requests()
+
+    if not results:
+        print("Новых запросов нет.")
+        return
+
+    for item in results:
+        print(f"\n=== Запрос ===\n{item['request']}")
+        print(f"\n=== Ответ ===\n{item['response']}")
+        print("-" * 50)
+
+        print(f"DEBUG: пытаюсь отправить письмо на {MAIL_USER}...")
+        try:
+            append_reply_to_inbox(
+                subject="Ответ от нейросети",
+                body_text=item["response"]
+            )
+            print("DEBUG: письмо отправлено успешно")
+        except Exception as e:
+            print(f"DEBUG: ОШИБКА при отправке письма: {e}")
+
+
+def run_forever():
+    """Бесконечный цикл опроса почты с заданным интервалом."""
+    print(f"Email-tunnel запущен. Опрос каждые {POLL_INTERVAL_SECONDS} сек. Ctrl+C для остановки.")
+    while True:
+        try:
+            run_once()
+        except Exception as e:
+            print(f"Ошибка в цикле обработки: {e}")
+        time.sleep(POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    run_forever()
