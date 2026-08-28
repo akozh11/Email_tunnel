@@ -1,7 +1,6 @@
 from mail import fetch_and_purge_allowed_with_images, send_reply
 from gemini import ask_gemini_with_image, ask_gemini_with_images
 from settings import POLL_INTERVAL_SECONDS
-from enc_config import ENCRYPTION_ENABLED, ENCRYPTION_REQUIRED, encryption_ready
 import time
 
 
@@ -31,7 +30,6 @@ def process_incoming_requests():
             "subject": letter.get("subject") or "Ответ от нейросети",
             "request": request_summary,
             "response": answer,
-            "encrypted": letter.get("encrypted", False),
         })
     return results
 
@@ -43,8 +41,7 @@ def run_once():
         return
 
     for item in results:
-        flag = " [шифр]" if item.get("encrypted") else ""
-        print(f"\n=== От: {item['from']}{flag} ===")
+        print(f"\n=== От: {item['from']} ===")
         print(f"=== Запрос ===\n{item['request']}")
         print(f"=== Ответ ===\n{item['response']}")
         print("-" * 50)
@@ -64,15 +61,7 @@ def run_once():
 
 def run_forever():
     """Бесконечный цикл опроса почты с заданным интервалом."""
-    enc_state = "выкл"
-    if ENCRYPTION_ENABLED and encryption_ready():
-        enc_state = "вкл" + (" (только шифр)" if ENCRYPTION_REQUIRED else "")
-    elif ENCRYPTION_ENABLED:
-        enc_state = "вкл, но нет ключа/секрета — письма идут открытым текстом"
-    print(
-        f"Email-tunnel запущен. Шифрование: {enc_state}. "
-        f"Опрос каждые {POLL_INTERVAL_SECONDS} сек. Ctrl+C для остановки."
-    )
+    print(f"Email-tunnel запущен. Опрос каждые {POLL_INTERVAL_SECONDS} сек. Ctrl+C для остановки.")
     while True:
         try:
             run_once()
