@@ -223,3 +223,4 @@ settings.py
 /state/
 keys
 keys/senders
+client_settings.py
