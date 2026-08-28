@@ -60,7 +60,18 @@ def get_body_and_images(msg):
     return body.strip(), images
 
 
-def fetch_and_purge_self_sent_with_images(mailbox="INBOX"):
+def fetch_and_purge_allowed_with_images(allowed_senders=None, mailbox="INBOX"):
+    """
+    Забирает письма только с адресов из allowed_senders.
+    Возвращает список словарей: from, subject, text, images.
+    Обработанные письма удаляет.
+    """
+    if allowed_senders is None:
+        from settings import ALLOWED_SENDERS
+        allowed_senders = ALLOWED_SENDERS
+
+    allowed = {addr.lower().strip() for addr in allowed_senders if addr}
+
     imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
     imap.login(MAIL_USER, MAIL_PASS)
     imap.select(mailbox)
@@ -82,18 +93,26 @@ def fetch_and_purge_self_sent_with_images(mailbox="INBOX"):
         raw_email = msg_data[0][1]
         msg = email.message_from_bytes(raw_email)
 
-        # Пропускаем письма-ответы нейросети — не обрабатываем их как запросы
+        # свои ответы бота не трогаем
         if msg.get("X-Email-Tunnel-Type") == "reply":
             continue
 
         from_raw = decode_mime_str(msg.get("From"))
         _, from_email = parseaddr(from_raw)
+        from_email = (from_email or "").lower().strip()
 
-        if from_email.lower() != MAIL_USER.lower():
+        if from_email not in allowed:
             continue
 
         body, images = get_body_and_images(msg)
-        results.append({"text": body, "images": images})
+        subject = decode_mime_str(msg.get("Subject"))
+
+        results.append({
+            "from": from_email,
+            "subject": subject,
+            "text": body,
+            "images": images,
+        })
         ids_to_delete.append(msg_id)
 
     for msg_id in ids_to_delete:
@@ -105,11 +124,11 @@ def fetch_and_purge_self_sent_with_images(mailbox="INBOX"):
     return results
 
 def send_reply(to_addr: str, subject: str, body_text: str):
-    """Отправляет ответ письмом через SMTP mail.ru"""
     msg = MIMEText(body_text, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = MAIL_USER
     msg["To"] = to_addr
+    msg["X-Email-Tunnel-Type"] = "reply"
 
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
         server.login(MAIL_USER, MAIL_PASS)

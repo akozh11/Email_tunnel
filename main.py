@@ -1,19 +1,11 @@
-import time
-from settings import MAIL_USER
-from mail import fetch_and_purge_self_sent_with_images, send_reply
+from mail import fetch_and_purge_allowed_with_images, send_reply
 from gemini import ask_gemini_with_image, ask_gemini_with_images
-
-from mail import fetch_and_purge_self_sent_with_images, append_reply_to_inbox
-POLL_INTERVAL_SECONDS = 10
+from settings import POLL_INTERVAL_SECONDS
+import time
 
 
 def process_incoming_requests():
-    """
-    Забирает новые письма от себя, отправляет каждое (текст + фото, если есть)
-    в Gemini, возвращает список результатов.
-    """
-    letters = fetch_and_purge_self_sent_with_images()
-
+    letters = fetch_and_purge_allowed_with_images()
     if not letters:
         return []
 
@@ -21,40 +13,46 @@ def process_incoming_requests():
     for letter in letters:
         text = letter["text"]
         images = letter["images"]
+        sender = letter["from"]
 
         if not text.strip() and not images:
             continue
 
         if images:
-            # Все фото из письма отправляются в одном запросе
             answer = ask_gemini_with_images(text=text, images=images)
             request_summary = f"{text} [+ {len(images)} фото]"
         else:
             answer = ask_gemini_with_image(text=text)
             request_summary = text
 
-        results.append({"request": request_summary, "response": answer})
-
+        results.append({
+            "from": sender,
+            "subject": letter.get("subject") or "Ответ от нейросети",
+            "request": request_summary,
+            "response": answer,
+        })
     return results
 
 
 def run_once():
     results = process_incoming_requests()
-
     if not results:
         print("Новых запросов нет.")
         return
 
     for item in results:
-        print(f"\n=== Запрос ===\n{item['request']}")
-        print(f"\n=== Ответ ===\n{item['response']}")
+        print(f"\n=== От: {item['from']} ===")
+        print(f"=== Запрос ===\n{item['request']}")
+        print(f"=== Ответ ===\n{item['response']}")
         print("-" * 50)
 
-        print(f"DEBUG: пытаюсь отправить письмо на {MAIL_USER}...")
+        to_addr = item["from"]
+        print(f"DEBUG: пытаюсь отправить письмо на {to_addr}...")
         try:
-            append_reply_to_inbox(
+            send_reply(
+                to_addr=to_addr,
                 subject="Ответ от нейросети",
-                body_text=item["response"]
+                body_text=item["response"],
             )
             print("DEBUG: письмо отправлено успешно")
         except Exception as e:
