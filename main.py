@@ -3,6 +3,15 @@ from gemini import ask_gemini_with_image, ask_gemini_with_images
 from settings import POLL_INTERVAL_SECONDS
 import time
 
+# log_request пишет каждый обработанный запрос в карточку адреса,
+# которую показывает Telegram-бот (bot.py). Если aiogram не установлен
+# или бот ещё не подключён — почтовый цикл всё равно продолжит работать,
+# просто без ведения карточек.
+try:
+    from bot import log_request
+except ImportError:
+    log_request = None
+
 
 def process_incoming_requests():
     letters = fetch_and_purge_allowed_with_images()
@@ -14,6 +23,7 @@ def process_incoming_requests():
         text = letter["text"]
         images = letter["images"]
         sender = letter["from"]
+        subject = letter.get("subject") or "Запрос"
 
         if not text.strip() and not images:
             continue
@@ -25,9 +35,20 @@ def process_incoming_requests():
             answer = ask_gemini_with_image(text=text)
             request_summary = text
 
+        if log_request is not None:
+            try:
+                log_request(
+                    email=sender,
+                    subject=subject,
+                    request_text=request_summary,
+                    response_text=answer,
+                )
+            except Exception as e:
+                print(f"DEBUG: не удалось записать запрос в карточку адреса: {e}")
+
         results.append({
             "from": sender,
-            "subject": letter.get("subject") or "Ответ от нейросети",
+            "subject": subject,
             "request": request_summary,
             "response": answer,
         })
@@ -37,7 +58,6 @@ def process_incoming_requests():
 def run_once():
     results = process_incoming_requests()
     if not results:
-        print("Новых запросов нет.")
         return
 
     for item in results:

@@ -1,5 +1,8 @@
 # Скопируйте этот файл в settings.py и заполните своими данными.
 # settings.py не должен попадать в git.
+TG_BOT_TOKEN = "токен от @BotFather"
+
+OWNER_ID = 123456789   # ваш Telegram ID (узнать можно, например, у @userinfobot)
 
 MAIL_USER = ""          # почтовый адрес туннеля
 MAIL_PASS = ""          # пароль приложения (App Password)
@@ -18,17 +21,3 @@ ALLOWED_SENDERS = [
 
 POLL_INTERVAL_SECONDS = 10
 
-# --- Шифрование полезной нагрузки ---
-# ENCRYPTION_ENABLED: шифровать ответы и пытаться расшифровать входящие.
-# ENCRYPTION_REQUIRED: игнорировать незашифрованные письма.
-ENCRYPTION_ENABLED = True
-ENCRYPTION_REQUIRED = False
-
-# Общий секрет для режима AES (одна фраза у сервера и у друзей).
-# Придумайте длинную случайную строку, не используйте пароль от почты.
-TUNNEL_SECRET = ""
-
-# Каталог ключей RSA (создаётся скриптом generate_keys.py)
-KEYS_DIR = "keys"
-RSA_PRIVATE_KEY_PATH = "keys/server_private.pem"
-RSA_PUBLIC_KEY_PATH = "keys/server_public.pem"

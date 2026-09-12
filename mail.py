@@ -8,6 +8,7 @@ from datetime import datetime
 
 from settings import MAIL_USER, MAIL_PASS, IMAP_SERVER, IMAP_PORT, SMTP_SERVER, SMTP_PORT
 
+
 def decode_mime_str(s):
     if not s:
         return ""
@@ -60,15 +61,36 @@ def get_body_and_images(msg):
     return body.strip(), images
 
 
+def _resolve_allowed_senders() -> list[str]:
+    """
+    Список доверенных адресов теперь управляется через Telegram-бота (bot.py).
+    Если он недоступен (не установлен aiogram, бот ещё не подключали) или
+    список в нём пока пуст, используем старый статический список из
+    settings.py как запасной вариант — чтобы почтовый цикл не остался
+    вообще без доверенных адресов при переходе на бота.
+    """
+    try:
+        from bot import get_allowed_senders_list
+        dynamic = get_allowed_senders_list()
+    except ImportError:
+        dynamic = []
+
+    if dynamic:
+        return dynamic
+
+    from settings import ALLOWED_SENDERS
+    return list(ALLOWED_SENDERS)
+
+
 def fetch_and_purge_allowed_with_images(allowed_senders=None, mailbox="INBOX"):
     """
-    Забирает письма только с адресов из allowed_senders.
+    Забирает письма только с адресов из allowed_senders (по умолчанию —
+    актуальный список доверенных адресов, управляемый через bot.py).
     Возвращает список словарей: from, subject, text, images.
     Обработанные письма удаляет.
     """
     if allowed_senders is None:
-        from settings import ALLOWED_SENDERS
-        allowed_senders = ALLOWED_SENDERS
+        allowed_senders = _resolve_allowed_senders()
 
     allowed = {addr.lower().strip() for addr in allowed_senders if addr}
 
@@ -122,6 +144,7 @@ def fetch_and_purge_allowed_with_images(allowed_senders=None, mailbox="INBOX"):
 
     imap.logout()
     return results
+
 
 def send_reply(to_addr: str, subject: str, body_text: str):
     msg = MIMEText(body_text, "plain", "utf-8")
