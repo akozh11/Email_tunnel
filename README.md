@@ -4,7 +4,7 @@
 
 Подходит для сценариев, когда удобнее (или единственно доступно) общаться с ИИ через почту: ограниченная сеть, нет браузера, запросы от нескольких людей на один ящик.
 
-> Ветка: [`Email_tunnel_2.0`](https://github.com/akozh11/Email_tunnel/tree/Email_tunnel_2.0)
+> Ветка: [`Email_tunnel_3.0`](https://github.com/akozh11/Email_tunnel/tree/Email_tunnel_3.0)
 
 ---
 
