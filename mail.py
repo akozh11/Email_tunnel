@@ -1,179 +1,232 @@
-import imaplib
-import smtplib
+"""
+mail.py — работа с почтой (IMAP/SMTP).
+
+  • fetch_incoming()       — забирает письма владельца и доверенных адресов, отбрасывает письма забаненных;
+  • delete_messages()      — удаляет письма по UID (после подтверждённой отправки ответа — «двухфазная» обработка);
+  • send_reply()           — ответ внешнему пользователю по SMTP;
+  • append_reply_to_inbox() — ответ владельцу кладётся прямо в его INBOX.
+
+Защита от почтовых петель: автоответы, bounce-письма и собственные ответы туннеля пропускаются.
+"""
+
+from __future__ import annotations
+
 import email
-from email.header import decode_header
-from email.utils import parseaddr
-from email.mime.text import MIMEText
+import imaplib
+import logging
+import re
+import smtplib
+from contextlib import contextmanager
 from datetime import datetime
+from email.header import decode_header
+from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid, parseaddr
 
-from settings import MAIL_USER, MAIL_PASS, IMAP_SERVER, IMAP_PORT, SMTP_SERVER, SMTP_PORT
+from settings import IMAP_PORT, IMAP_SERVER, MAIL_PASS, MAIL_USER, SMTP_PORT, SMTP_SERVER
+
+logger = logging.getLogger("mail")
+
+OWNER = MAIL_USER.lower()
+TUNNEL_HEADER = "X-Email-Tunnel-Type"
+
+# UID писем, которые точно не нужно разбирать повторно (свои ответы, автоответы, bounce)
+_ignored_uids: set[int] = set()
 
 
-def decode_mime_str(s):
+def decode_mime_str(s) -> str:
     if not s:
         return ""
-    parts = decode_header(s)
     decoded = ""
-    for text, charset in parts:
-        if isinstance(text, bytes):
-            decoded += text.decode(charset or "utf-8", errors="ignore")
+    for part, charset in decode_header(str(s)):
+        if isinstance(part, bytes):
+            decoded += part.decode(charset or "utf-8", errors="ignore")
         else:
-            decoded += text
+            decoded += part
     return decoded
 
 
-def get_body_and_images(msg):
-    """
-    Возвращает (текст письма, список изображений).
-    Каждое изображение — словарь {filename, mime_type, data (bytes)}.
-    """
-    body = ""
-    images = []
-
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition", ""))
-
-            # Текстовая часть
-            if content_type == "text/plain" and "attachment" not in content_disposition:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    body = payload.decode(charset, errors="ignore")
-
-            # Изображения (как вложения, так и inline)
-            if content_type.startswith("image/"):
-                payload = part.get_payload(decode=True)
-                if payload:
-                    filename = part.get_filename() or "image.jpg"
-                    images.append({
-                        "filename": decode_mime_str(filename),
-                        "mime_type": content_type,
-                        "data": payload
-                    })
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            body = payload.decode(charset, errors="ignore")
-
-    return body.strip(), images
+def _strip_html(html_text: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html_text)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
 
 
-def _resolve_allowed_senders() -> list[str]:
-    """
-    Список доверенных адресов теперь управляется через Telegram-бота (bot.py).
-    Если он недоступен (не установлен aiogram, бот ещё не подключали) или
-    список в нём пока пуст, используем старый статический список из
-    settings.py как запасной вариант — чтобы почтовый цикл не остался
-    вообще без доверенных адресов при переходе на бота.
-    """
+def get_body_and_images(msg) -> tuple[str, list[dict]]:
+    """(текст письма, список изображений {filename, mime_type, data})."""
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    images: list[dict] = []
+
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for part in parts:
+        content_type = part.get_content_type()
+        disposition = str(part.get("Content-Disposition", ""))
+
+        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+            payload = part.get_payload(decode=True)
+            if payload:
+                charset = part.get_content_charset() or "utf-8"
+                decoded = payload.decode(charset, errors="ignore")
+                (plain_parts if content_type == "text/plain" else html_parts).append(decoded)
+
+        elif content_type.startswith("image/"):
+            payload = part.get_payload(decode=True)
+            if payload:
+                images.append({
+                    "filename": decode_mime_str(part.get_filename() or "image.jpg"),
+                    "mime_type": content_type,
+                    "data": payload,
+                })
+
+    body = "\n".join(plain_parts).strip()
+    if not body and html_parts:
+        body = _strip_html("\n".join(html_parts))
+    return body, images
+
+
+def is_auto_generated(msg) -> bool:
+    """Свои ответы, автоответы, рассылки и уведомления о недоставке — не обрабатываем."""
+    if msg.get(TUNNEL_HEADER):
+        return True
+    auto = (msg.get("Auto-Submitted") or "").strip().lower()
+    if auto and auto != "no":
+        return True
+    if (msg.get("Precedence") or "").strip().lower() in {"bulk", "junk", "list", "auto_reply"}:
+        return True
+    if msg.get("X-Autoreply") or msg.get("X-Autorespond"):
+        return True
+    if msg.get_content_type() == "multipart/report":
+        return True
+    local_part = parseaddr(decode_mime_str(msg.get("From")))[1].lower().split("@")[0]
+    return local_part in {"mailer-daemon", "postmaster"}
+
+
+@contextmanager
+def _imap(mailbox: str = "INBOX"):
+    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=30)
     try:
-        from bot import get_allowed_senders_list
-        dynamic = get_allowed_senders_list()
-    except ImportError:
-        dynamic = []
-
-    if dynamic:
-        return dynamic
-
-    from settings import ALLOWED_SENDERS
-    return list(ALLOWED_SENDERS)
+        imap.login(MAIL_USER, MAIL_PASS)
+        imap.select(mailbox)
+        yield imap
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
 
 
-def fetch_and_purge_allowed_with_images(allowed_senders=None, mailbox="INBOX"):
+def _fetch_message(imap, uid: int, headers_only: bool):
+    section = "BODY.PEEK[HEADER]" if headers_only else "BODY.PEEK[]"
+    status, data = imap.uid("FETCH", str(uid), f"({section})")
+    if status != "OK" or not data or not isinstance(data[0], tuple):
+        return None
+    return email.message_from_bytes(data[0][1])
+
+
+def fetch_incoming(allowed: set[str], banned: set[str]) -> dict:
     """
-    Забирает письма только с адресов из allowed_senders (по умолчанию —
-    актуальный список доверенных адресов, управляемый через bot.py).
-    Возвращает список словарей: from, subject, text, images.
-    Обработанные письма удаляет.
+    Возвращает {"letters": [...], "dropped": [(uid, sender), ...]}.
+
+    letter: {uid, sender, subject, message_id, text, images}.
+    • письма владельца и доверенных адресов — в letters;
+    • письма забаненных — в dropped (вызывающий код удалит их и учтёт в статистике);
+    • письма незнакомых адресов остаются нетронутыми в ящике.
     """
-    if allowed_senders is None:
-        allowed_senders = _resolve_allowed_senders()
+    allowed = {a.lower() for a in allowed}
+    banned = {b.lower() for b in banned}
+    letters: list[dict] = []
+    dropped: list[tuple[int, str]] = []
 
-    allowed = {addr.lower().strip() for addr in allowed_senders if addr}
+    with _imap() as imap:
+        status, data = imap.uid("SEARCH", None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            return {"letters": letters, "dropped": dropped}
 
-    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-    imap.login(MAIL_USER, MAIL_PASS)
-    imap.select(mailbox)
+        for raw_uid in data[0].split():
+            uid = int(raw_uid)
+            if uid in _ignored_uids:
+                continue
 
-    status, data = imap.search(None, "ALL")
-    if status != "OK":
-        imap.logout()
-        return []
+            header = _fetch_message(imap, uid, headers_only=True)
+            if header is None:
+                continue
+            if is_auto_generated(header):
+                _ignored_uids.add(uid)
+                continue
 
-    msg_ids = data[0].split()
-    results = []
-    ids_to_delete = []
+            sender = parseaddr(decode_mime_str(header.get("From")))[1].lower()
+            if not sender:
+                continue
 
-    for msg_id in msg_ids:
-        status, msg_data = imap.fetch(msg_id, "(RFC822)")
-        if status != "OK":
-            continue
+            if sender != OWNER and sender in banned:
+                dropped.append((uid, sender))
+                continue
+            if sender != OWNER and sender not in allowed:
+                continue
 
-        raw_email = msg_data[0][1]
-        msg = email.message_from_bytes(raw_email)
+            msg = _fetch_message(imap, uid, headers_only=False)
+            if msg is None:
+                continue
+            text, images = get_body_and_images(msg)
+            letters.append({
+                "uid": uid,
+                "sender": sender,
+                "subject": decode_mime_str(msg.get("Subject")),
+                "message_id": msg.get("Message-ID"),
+                "text": text,
+                "images": images,
+            })
 
-        # свои ответы бота не трогаем
-        if msg.get("X-Email-Tunnel-Type") == "reply":
-            continue
+    return {"letters": letters, "dropped": dropped}
 
-        from_raw = decode_mime_str(msg.get("From"))
-        _, from_email = parseaddr(from_raw)
-        from_email = (from_email or "").lower().strip()
 
-        if from_email not in allowed:
-            continue
-
-        body, images = get_body_and_images(msg)
-        subject = decode_mime_str(msg.get("Subject"))
-
-        results.append({
-            "from": from_email,
-            "subject": subject,
-            "text": body,
-            "images": images,
-        })
-        ids_to_delete.append(msg_id)
-
-    for msg_id in ids_to_delete:
-        imap.store(msg_id, "+FLAGS", "\\Deleted")
-    if ids_to_delete:
+def delete_messages(uids: list[int]) -> None:
+    if not uids:
+        return
+    with _imap() as imap:
+        imap.uid("STORE", ",".join(str(u) for u in uids), "+FLAGS", "(\\Deleted)")
         imap.expunge()
 
-    imap.logout()
-    return results
 
+def send_reply(to_addr: str, subject: str, body_text: str, in_reply_to: str | None = None) -> None:
+    """Ответ внешнему пользователю через SMTP (strict routing: только на адрес отправителя)."""
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}" if subject else "Ответ от нейросети"
 
-def send_reply(to_addr: str, subject: str, body_text: str):
     msg = MIMEText(body_text, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = MAIL_USER
     msg["To"] = to_addr
-    msg["X-Email-Tunnel-Type"] = "reply"
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=MAIL_USER.split("@")[-1])
+    msg["Auto-Submitted"] = "auto-replied"
+    msg[TUNNEL_HEADER] = "reply"
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = in_reply_to
 
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
         server.login(MAIL_USER, MAIL_PASS)
-        server.sendmail(MAIL_USER, to_addr, msg.as_string())
+        server.send_message(msg)
 
 
-def append_reply_to_inbox(subject: str, body_text: str, mailbox="INBOX"):
+def append_reply_to_inbox(subject: str, body_text: str, mailbox: str = "INBOX") -> None:
+    """Ответ владельцу кладётся прямо в его ящик с маркером «это ответ, не запрос»."""
     msg = MIMEText(body_text, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = MAIL_USER
     msg["To"] = MAIL_USER
-    msg["Date"] = email.utils.formatdate(localtime=True)
-    msg["X-Email-Tunnel-Type"] = "reply"  # маркер — это ответ, не запрос
+    msg["Date"] = formatdate(localtime=True)
+    msg[TUNNEL_HEADER] = "reply"
 
-    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-    imap.login(MAIL_USER, MAIL_PASS)
-
-    imap.append(
-        mailbox,
-        None,
-        imaplib.Time2Internaldate(datetime.now().timetuple()),
-        msg.as_bytes()
-    )
-
-    imap.logout()
+    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=30)
+    try:
+        imap.login(MAIL_USER, MAIL_PASS)
+        imap.append(mailbox, None, imaplib.Time2Internaldate(datetime.now().timetuple()), msg.as_bytes())
+    finally:
+        try:
+            imap.logout()
+        except Exception:  # noqa: BLE001
+            pass
