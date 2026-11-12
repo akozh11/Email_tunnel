@@ -349,7 +349,8 @@ def render_security() -> tuple[str, InlineKeyboardMarkup]:
     else:
         lines.append("\nЗабаненных нет.")
 
-    rows.append([_btn("📜 Журнал инцидентов", "inc:0"), _btn("📊 Статистика", "st:today")])
+    rows.append([_btn("📜 Журнал инцидентов", "inc:0"), _btn("🧹 Очистить инциденты", "clearinc")])
+    rows.append([_btn("📊 Статистика", "st:today")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -382,7 +383,7 @@ def render_incidents(page: int) -> tuple[str, InlineKeyboardMarkup]:
         if page < total_pages - 1:
             nav.append(_btn("➡️", f"inc:{page + 1}"))
         rows.append(nav)
-    rows.append([_btn("◀️ Безопасность", "sec")])
+    rows.append([_btn("🧹 Очистить все", "clearinc"), _btn("◀️ Безопасность", "sec")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -778,6 +779,39 @@ def cb_delete_ask(call: CallbackQuery) -> None:
         return
     _edit(call, f"Удалить <b>{html.escape(item['email'])}</b> из доверенных?\nИстория и статистика сохранятся в файлах.",
           InlineKeyboardMarkup([[_btn("✅ Да, удалить", f"del_yes:{sid}"), _btn("↩️ Нет", f"card:{sid}:0")]]))
+
+
+@bot.callback_query_handler(func=_cb("clearinc", exact=True))
+def cb_clear_incidents(call: CallbackQuery) -> None:
+    n = storage.clear_incidents()
+    text, kb = render_security()
+    _edit(call, text, kb, answer_text=f"Очищено записей: {n}" if n else "Журнал уже пуст")
+
+
+@bot.callback_query_handler(func=_cb("quickadd:"))
+def cb_quick_add(call: CallbackQuery) -> None:
+    token = call.data.split(":", 1)[1]
+    email = storage.get_pending_add(token)
+    if not email:
+        bot.answer_callback_query(call.id, "Предложение устарело", show_alert=True)
+        return
+    if storage.add_sender(email, "", added_by=call.from_user.id):
+        storage.clear_pending_add(token)
+        logger.info("Быстро добавлен адрес: %s", email)
+        bot.answer_callback_query(call.id, "✅ Добавлен")
+        text, kb = render_senders_list(0)
+        try:
+            bot.edit_message_text(
+                f"✅ Добавлен: <b>{html.escape(email)}</b>",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        bot.send_message(call.message.chat.id, text, reply_markup=kb)
+    else:
+        bot.answer_callback_query(call.id, "Уже есть в списке", show_alert=True)
 
 
 # ─── заглушки владельца (после всех его обработчиков) ───

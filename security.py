@@ -217,3 +217,21 @@ def on_model_block(sender: str, text: str) -> Decision:
         "reason": "Gemini отказался отвечать: сработали встроенные фильтры безопасности.",
     }
     return _apply_policy(sender, text, result)
+
+
+def propose_add_sender(sender: str, subject: str = "") -> None:
+    """Предлагает владельцу добавить нового отправителя."""
+    import secrets
+    token = secrets.token_hex(6)
+    storage.set_pending_add(token, sender)
+    subj = html.escape(subject[:80]) if subject else "—"
+    text = (
+        f"✉️ <b>Новый отправитель</b>\n"
+        f"👤 {html.escape(sender)}\n"
+        f"📝 Тема: {subj}\n\n"
+        f"Добавить в доверенные?"
+    )
+    kb = _kb(
+        [("✅ Добавить", f"quickadd:{token}"), ("🚫 Игнорировать", "noop")],
+    )
+    notify_owner(text, kb)

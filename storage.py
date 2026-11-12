@@ -483,3 +483,56 @@ def add_incident(email: str, verdict: str, category: str, confidence: float,
 def get_incidents() -> list[dict]:
     """Новые сверху."""
     return list(reversed(_sec_read()["incidents"]))
+
+
+def clear_incidents() -> int:
+    """Очищает журнал инцидентов. Возвращает сколько записей было удалено."""
+    def fn(sec):
+        _sec_defaults(sec)
+        n = len(sec["incidents"])
+        sec["incidents"] = []
+        return n
+    return _mutate(SECURITY_FILE, {}, fn)
+
+
+_NOTIFIED_FILE = DATA_DIR / "notified_unknown.json"
+_PENDING_ADD = DATA_DIR / "pending_add.json"
+
+
+def set_pending_add(token: str, email: str) -> None:
+    def fn(data):
+        data[token] = {"email": email.lower().strip(), "ts": now_iso()}
+        # чистим старые
+        cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+        for old in [t for t, v in data.items() if v.get("ts", "") < cutoff]:
+            del data[old]
+    _mutate(_PENDING_ADD, {}, fn)
+
+
+def get_pending_add(token: str) -> str | None:
+    data = _read(_PENDING_ADD, {})
+    item = data.get(token)
+    return item["email"] if item else None
+
+
+def clear_pending_add(token: str) -> None:
+    def fn(data):
+        data.pop(token, None)
+    _mutate(_PENDING_ADD, {}, fn)
+
+
+def was_notified_unknown(email: str) -> bool:
+    """Проверяет, предлагали ли уже добавить этот адрес."""
+    data = _read(_NOTIFIED_FILE, {})
+    return email.lower().strip() in data
+
+
+def mark_notified_unknown(email: str) -> None:
+    email = email.lower().strip()
+    def fn(data):
+        data[email] = now_iso()
+        # чистим старые (старше 30 дней)
+        cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+        for old in [e for e, ts in data.items() if ts < cutoff]:
+            del data[old]
+    _mutate(_NOTIFIED_FILE, {}, fn)

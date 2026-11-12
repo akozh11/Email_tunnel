@@ -127,22 +127,23 @@ def _fetch_message(imap, uid: int, headers_only: bool):
 
 def fetch_incoming(allowed: set[str], banned: set[str]) -> dict:
     """
-    Возвращает {"letters": [...], "dropped": [(uid, sender), ...]}.
+    Возвращает {"letters": [...], "dropped": [(uid, sender), ...], "unknown": [(uid, sender, subject), ...]}.
 
     letter: {uid, sender, subject, message_id, text, images}.
     • письма владельца и доверенных адресов — в letters;
     • письма забаненных — в dropped (вызывающий код удалит их и учтёт в статистике);
-    • письма незнакомых адресов остаются нетронутыми в ящике.
+    • письма незнакомых адресов — в unknown (чтобы предложить владельцу добавить).
     """
     allowed = {a.lower() for a in allowed}
     banned = {b.lower() for b in banned}
     letters: list[dict] = []
     dropped: list[tuple[int, str]] = []
+    unknown: list[tuple[int, str, str]] = []
 
     with _imap() as imap:
         status, data = imap.uid("SEARCH", None, "ALL")
         if status != "OK" or not data or not data[0]:
-            return {"letters": letters, "dropped": dropped}
+            return {"letters": letters, "dropped": dropped, "unknown": unknown}
 
         for raw_uid in data[0].split():
             uid = int(raw_uid)
@@ -160,10 +161,13 @@ def fetch_incoming(allowed: set[str], banned: set[str]) -> dict:
             if not sender:
                 continue
 
+            subject = decode_mime_str(header.get("Subject")) or ""
+
             if sender != OWNER and sender in banned:
                 dropped.append((uid, sender))
                 continue
             if sender != OWNER and sender not in allowed:
+                unknown.append((uid, sender, subject[:100]))
                 continue
 
             msg = _fetch_message(imap, uid, headers_only=False)
@@ -179,7 +183,7 @@ def fetch_incoming(allowed: set[str], banned: set[str]) -> dict:
                 "images": images,
             })
 
-    return {"letters": letters, "dropped": dropped}
+    return {"letters": letters, "dropped": dropped, "unknown": unknown}
 
 
 def delete_messages(uids: list[int]) -> None:

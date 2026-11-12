@@ -165,6 +165,12 @@ def run_once() -> None:
         storage.record_stat(sender, "dropped")
         to_delete.append(uid)
 
+    # Предложить добавить новых отправителей
+    for uid, sender, subject in result.get("unknown", []):
+        if not storage.was_notified_unknown(sender):
+            storage.mark_notified_unknown(sender)
+            security.propose_add_sender(sender, subject)
+
     for letter in result["letters"]:
         try:
             if process_letter(letter):
